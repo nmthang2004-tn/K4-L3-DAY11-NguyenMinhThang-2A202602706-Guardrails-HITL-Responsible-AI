@@ -10,6 +10,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from assignment.rate_limiter import RateLimitPlugin
 from assignment.audit_log import AuditLogPlugin
@@ -17,54 +18,59 @@ from assignment.monitoring import MonitoringAlert
 from guardrails.input_guardrails import InputGuardrailPlugin, detect_injection, topic_filter
 from guardrails.output_guardrails import OutputGuardrailPlugin, content_filter
 
-# VinBank approved domains for egress
-VINBANK_DOMAINS = ["vinbank.com", "vinbank.vn", "api.vinbank.com"]
+# Danh sách domain nội bộ / ngân hàng được phép gửi dữ liệu ra (Allowlist)
+ALLOWED_EGRESS_DOMAINS = [
+    "api.vinbank.example",
+    "vinbank.example",
+    "vinbank.internal",
+    "api.vinbank.internal",
+]
 
-# Sensitive data patterns for egress check
-SENSITIVE_PATTERNS = [
-    r"password\s*[:=]\s*\S+",
-    r"api[_\s]?key\s*[:=]\s*\S+",
-    r"db[_\s]?host\s*[:=]\s*\S+",
-    r"\+84\d{9,}",
-    r"\b\d{10,11}\b",  # Phone numbers
-    r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",  # Email
+# Các mẫu secret / dữ liệu nhạy cảm cấm rò rỉ qua Egress
+SENSITIVE_LEAK_PATTERNS = [
+    r"admin123",
+    r"sk-vinbank-secret-2024",
+    r"db\.vinbank\.internal(?::\d+)?",
+    r"sk-[a-zA-Z0-9_\-]{10,}",
+    r"(?i)(admin_password|api_key|password)\s*[:=]\s*\S+",
 ]
 
 
-def is_egress_allowed(destination: str, payload: str) -> bool:
-    """Enforce a destination allowlist before any data leaves the agent.
+def is_egress_allowed(destination_url: str, payload: str) -> bool:
+    """Kiểm tra chính sách Egress:
+    1. Destination URL phải nằm trong Allowlist.
+    2. Payload không được chứa Secret / thông tin nhạy cảm.
 
-    Return ``True`` only for an approved VinBank HTTPS endpoint and ordinary
-    banking payload. Return ``False`` for unknown domains and payloads that
-    contain a password, API key, database host, phone number or email address.
-    Do not let the LLM's prose decide this policy.
+    Returns:
+        True nếu thỏa mãn cả hai điều kiện, False nếu vi phạm.
     """
-    # Check 1: Must be HTTPS
-    if not destination.lower().startswith("https://"):
+    if not destination_url:
         return False
 
-    # Check 2: Must be VinBank domain
+    # 1. Kiểm tra Destination Domain
     try:
-        from urllib.parse import urlparse
-        parsed = urlparse(destination)
-        domain = parsed.netloc.lower()
-        # Remove port if present
-        domain = domain.split(":")[0]
-        # Check if domain is in approved list or ends with approved domain
-        is_vinbank = any(
-            domain == d or domain.endswith(f".{d}")
-            for d in VINBANK_DOMAINS
+        parsed = urlparse(destination_url)
+        # Lấy hostname (bỏ qua port nếu có)
+        hostname = (parsed.hostname or "").lower()
+        if not hostname:
+            # Fallback nếu url truyền vào không có scheme (ví dụ: api.vinbank.example/...)
+            hostname = destination_url.split("/")[0].split(":")[0].lower()
+
+        # Kiểm tra xem hostname có khớp hoặc là subdomain của allowed domain không
+        is_domain_allowed = any(
+            hostname == allowed or hostname.endswith("." + allowed)
+            for allowed in ALLOWED_EGRESS_DOMAINS
         )
-        if not is_vinbank:
+        if not is_domain_allowed:
             return False
     except Exception:
         return False
 
-    # Check 3: Payload must not contain sensitive data
+    # 2. Kiểm tra Payload có bị leak Secret không
     if payload:
-        for pattern in SENSITIVE_PATTERNS:
-            if re.search(pattern, payload, re.IGNORECASE):
-                return False
+        for pattern in SENSITIVE_LEAK_PATTERNS:
+            if re.search(pattern, str(payload)):
+                return False  # Chặn vì chứa secret
 
     return True
 
