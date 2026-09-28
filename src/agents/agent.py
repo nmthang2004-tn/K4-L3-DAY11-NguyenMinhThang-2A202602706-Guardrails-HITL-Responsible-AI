@@ -56,9 +56,9 @@ UNSAFE_INSTRUCTION = RED_DEFAULT_INSTRUCTION
 PROTECTED_INSTRUCTION = BLUE_INSTRUCTION
 
 
-def create_red_agent_default():
-    """Red — NO guardrails. Model mềm cố định (4o-mini / 3.5-flash)."""
-    soft = get_red_model_default()
+def create_red_agent_default(model: str = None):
+    """Red — NO guardrails. Model mềm cố định (4o-mini / 3.5-flash), hoặc model được chỉ định."""
+    soft = model or get_red_model_default()
     if red_uses_openai_sdk():
         from core.openai_runtime import create_openai_pair
 

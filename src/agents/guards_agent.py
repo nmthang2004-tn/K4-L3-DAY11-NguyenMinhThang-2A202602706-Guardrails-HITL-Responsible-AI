@@ -235,8 +235,12 @@ class GuardsOutputPlugin(base_plugin.BasePlugin):
         return llm_response
 
 
-def create_red_agent_advance():
-    """Red Advance — strong guardrails. Bonus B2 tối đa +10 nếu leak (replay; chọn 1)."""
+def create_red_agent_advance(model: str = None):
+    """Red Advance — strong guardrails. Bonus B2 tối đa +10 nếu leak (replay; chọn 1).
+
+    Args:
+        model: Model name (optional). Nếu None, dùng model từ .env.
+    """
     from core.config import (
         red_uses_openai_sdk,
         red_uses_gemini,
@@ -261,7 +265,7 @@ def create_red_agent_advance():
             )
         return text
 
-    advance_model = get_red_model()
+    advance_model = model or get_red_model()
     if red_uses_openai_sdk():
         from core.openai_runtime import create_openai_pair
 

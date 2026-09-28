@@ -47,6 +47,16 @@ DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 HARD_OPENAI_MODEL = "gpt-5.6-luna"
 HARD_GEMINI_MODEL = "gemini-3.8-flash"
 
+# Gemini fallback models - thứ tự ưu tiên (3.5 → 3.6 → 3.7 → 3.8 → latest)
+# Cấm dùng 2.0, 2.5 vì user yêu cầu chỉ flash 3.x
+GEMINI_FALLBACK_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-exp",
+]
+
 # --- Protected data (DEMO) ---
 PROTECTED_DATA_DIR = _ROOT / "data" / "protected"
 PROTECTED_SECRETS_PATH = PROTECTED_DATA_DIR / "vinbank_secrets.json"
@@ -143,12 +153,18 @@ def get_red_provider() -> str:
 
 
 def get_red_model() -> str:
-    """Model Red Team từ .env (cùng cho default + advance)."""
+    """Model Red Team từ .env, fallback sang GEMINI_FALLBACK_MODELS[0] nếu không hợp lệ."""
     if get_red_provider() == PROVIDER_GEMINI:
-        return (
-            os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
-            or DEFAULT_GEMINI_MODEL
-        )
+        env_model = os.environ.get("GEMINI_MODEL", "").strip()
+        if env_model:
+            # Kiểm tra model có trong danh sách fallback không
+            if env_model in GEMINI_FALLBACK_MODELS:
+                return env_model
+            # Model không hợp lệ, dùng model đầu tiên trong fallback
+            print(f"[WARN] GEMINI_MODEL '{env_model}' không trong danh sách fallback.")
+            print(f"[INFO] Sử dụng: {GEMINI_FALLBACK_MODELS[0]}")
+            return GEMINI_FALLBACK_MODELS[0]
+        return GEMINI_FALLBACK_MODELS[0]  # Default fallback
     return (
         os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL).strip()
         or DEFAULT_OPENAI_MODEL
@@ -163,6 +179,36 @@ def get_red_model_default() -> str:
 def get_red_model_advance() -> str:
     """Alias — Red Advance dùng cùng model .env."""
     return get_red_model()
+
+
+def get_gemini_fallback_models() -> list:
+    """Trả về danh sách Gemini fallback models."""
+    return GEMINI_FALLBACK_MODELS.copy()
+
+
+def get_next_fallback_model(current_model: str = None) -> str | None:
+    """Trả về model tiếp theo trong danh sách fallback.
+
+    Args:
+        current_model: Model hiện tại đang dùng
+
+    Returns:
+        Model tiếp theo trong danh sách, hoặc None nếu không còn fallback
+    """
+    if not get_red_provider() == PROVIDER_GEMINI:
+        return None
+
+    models = GEMINI_FALLBACK_MODELS
+    if current_model is None:
+        return models[0] if models else None
+
+    try:
+        idx = models.index(current_model)
+        if idx + 1 < len(models):
+            return models[idx + 1]
+    except ValueError:
+        pass
+    return None
 
 
 def get_openai_api_key() -> str:
@@ -215,23 +261,22 @@ def provider_label() -> str:
 
 
 def is_harder_model() -> bool:
-    """True nếu .env đang trỏ model khó (luna / 3.8) — tuỳ chọn, không phải tên agent."""
+    """True nếu .env đang trỏ model khó (luna / 3.x flash cao hơn) — tuỳ chọn."""
     m = get_red_model().lower()
+    # Model mặc định (không phải harder)
     if m in {DEFAULT_OPENAI_MODEL.lower(), DEFAULT_GEMINI_MODEL.lower()}:
         return False
     hard = {
         HARD_OPENAI_MODEL.lower(),
         HARD_GEMINI_MODEL.lower(),
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-4o",
+        "gemini-flash-exp",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
-        "gemini-2.5-pro",
     }
     if m in hard:
         return True
-    return any(x in m for x in ("gpt-5.6", "pro", "gemini-3.8", "gemini-3.7"))
+    # Các model 3.6+ được coi là harder
+    return any(x in m for x in ("gemini-3.6", "gemini-3.7", "gemini-3.8", "gemini-flash-exp"))
 
 
 def setup_api_key():

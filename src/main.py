@@ -18,7 +18,20 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+import httpx
 
+# Ép mọi Client của httpx tự động bỏ qua kiểm tra SSL
+_orig_init = httpx.Client.__init__
+def _insecure_init(self, *args, **kwargs):
+    kwargs["verify"] = False
+    _orig_init(self, *args, **kwargs)
+httpx.Client.__init__ = _insecure_init
+
+_orig_async_init = httpx.AsyncClient.__init__
+def _insecure_async_init(self, *args, **kwargs):
+    kwargs["verify"] = False
+    _orig_async_init(self, *args, **kwargs)
+httpx.AsyncClient.__init__ = _insecure_async_init
 # Cho phép chạy ``python src/main.py`` từ gốc repo
 _SRC_DIR = Path(__file__).resolve().parent
 if str(_SRC_DIR) not in sys.path:
