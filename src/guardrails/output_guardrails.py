@@ -28,37 +28,49 @@ from core.utils import chat_with_agent
 # ============================================================
 
 def content_filter(response: str) -> dict:
-    """Filter response for PII, secrets, and harmful content.
-
-    Args:
-        response: The LLM's response text
-
-    Returns:
-        dict with 'safe', 'issues', and 'redacted' keys
     """
+    Quét và che giấu (redact) PII và secrets trong câu trả lời từ LLM.
+    Trả về dict gồm:
+      - safe (bool): True nếu không có vấn đề nào cần redact, False nếu có vi phạm
+      - issues (list[str]): danh sách mô tả các lỗi phát hiện
+      - redacted (str): chuỗi đã được thay thế dữ liệu nhạy cảm bằng [REDACTED]
+    """
+    if not response:
+        return {"safe": True, "issues": [], "redacted": ""}
+
+    redacted_text = response
     issues = []
-    redacted = response
 
-    # PII patterns to check
-    PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
-    }
+    # Danh sách các mẫu dữ liệu nhạy cảm cần lọc
+    sensitive_patterns = [
+        # Số điện thoại Việt Nam (+84 hoặc 0x, theo sau là 9 chữ số)
+        ("Vietnamese Phone Number", r'(\+84|0)(3|5|7|8|9)[0-9]{8}\b'),
+        
+        # Email
+        ("Email Address", r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'),
+        
+        # CCCD / CMND (12 chữ số)
+        ("Citizen ID (CCCD)", r'\b0[0-9]{11}\b'),
+        
+        # API Key (định dạng sk-...)
+        ("API Key", r'sk-[a-zA-Z0-9_\-]{10,}'),
+        
+        # Password / Secret trực tiếp (admin123 hoặc password: ...)
+        ("Admin Password / Secret", r'(?i)(admin_password|password|mật khẩu)[\s:=]+[\w\-@!#$%^&*]+|admin123')
+    ]
 
-    for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, response, re.IGNORECASE)
+    for label, pattern in sensitive_patterns:
+        matches = re.findall(pattern, redacted_text)
         if matches:
-            issues.append(f"{name}: {len(matches)} found")
-            redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+            issues.append(f"Detected {label}")
+            redacted_text = re.sub(pattern, '[REDACTED]', redacted_text)
+
+    is_safe = (len(issues) == 0)
 
     return {
-        "safe": len(issues) == 0,
+        "safe": is_safe,
         "issues": issues,
-        "redacted": redacted,
+        "redacted": redacted_text
     }
 
 
@@ -172,16 +184,48 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Gọi content_filter(response_text)
+        filter_result = content_filter(response_text)
+        if not filter_result["safe"] or len(filter_result["issues"]) > 0:
+            self.redacted_count += 1
+            response_text = filter_result["redacted"]
+            # Cập nhật nội dung llm_response bằng bản đã che chắn [REDACTED]
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=response_text)],
+            )
 
-        return llm_response  # TODO: modify if needed
+        # 2. Nếu bật LLM Judge: gọi llm_safety_check(response_text)
+        if self.use_llm_judge and "llm_safety_check" in globals():
+            import inspect
+            is_unsafe = False
+            try:
+                # Hỗ trợ cả hàm sync và async cho llm_safety_check
+                if inspect.iscoroutinefunction(llm_safety_check):
+                    judge_result = await llm_safety_check(response_text)
+                else:
+                    judge_result = llm_safety_check(response_text)
+
+                # Phân tích kết quả trả về từ judge
+                if isinstance(judge_result, bool):
+                    is_unsafe = not judge_result
+                elif isinstance(judge_result, str):
+                    is_unsafe = judge_result.strip().upper() in ["UNSAFE", "BLOCK"]
+                elif isinstance(judge_result, dict):
+                    is_unsafe = not judge_result.get("safe", True)
+            except Exception:
+                is_unsafe = False
+
+            if is_unsafe:
+                self.blocked_count += 1
+                safe_message = "Yêu cầu bị từ chối: Phản hồi vi phạm chính sách an toàn nội dung của VinBank."
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text=safe_message)],
+                )
+
+        # 3. Trả về llm_response đã được xử lý an toàn
+        return llm_response
 
 
 # ============================================================

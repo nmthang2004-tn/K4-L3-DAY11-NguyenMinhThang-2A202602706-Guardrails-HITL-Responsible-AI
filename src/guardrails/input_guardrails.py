@@ -41,6 +41,14 @@ InputStatus = Literal["ALLOW", "BLOCK"]
 # summarize an external bank-transfer email just because it is external data.
 # Regex is one signal, not the whole security boundary.
 # ============================================================
+def clean_input(text: str) -> str:
+    """Xóa bỏ các ký tự Unicode ẩn (Zero-width) và chuẩn hóa khoảng trắng."""
+    if not text:
+        return ""
+    # Xóa zero-width spaces, zero-width non-joiner, BOM: \u200b, \u200c, \u200d, \ufeff
+    cleaned = re.sub(r'[\u200b-\u200d\ufeff]', '', text)
+    # Gom cụm khoảng trắng
+    return re.sub(r'\s+', ' ', cleaned).strip()
 
 def detect_injection(user_input: str) -> InputStatus:
     """Detect prompt injection patterns in user input.
@@ -51,14 +59,27 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
+    if not user_input:
+        return "ALLOW"
+
+    # Xóa ký tự Unicode ẩn (Zero-width) trước khi quét
+    cleaned_input = re.sub(r'[\u200b-\u200d\ufeff]', '', user_input)
+
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        # Pattern 1: Bỏ qua / ghi đè chỉ dẫn
+        r"ignore\s+(all\s+)?(previous|prior|above|system)?\s*(instructions|prompts|rules|commands)",
+        # Pattern 2: Đóng vai chế độ không giới hạn / Jailbreak
+        r"(you\s+are\s+now|act\s+as|pretend\s+to\s+be)\s+.*?(unrestricted|jailbroken|dan|developer\s+mode|evil)",
+        # Pattern 3: Đòi xem System Prompt / Secret / Password
+        r"(reveal|show|display|print|leak|tell\s+me)\s+.*?(system\s+prompt|secret|api[_\s]?key|password)",
+        # Pattern 4: Thao túng trực tiếp system tag
+        r"(system\s*:\s*|system\s+instruction|administrative\s+override)",
+        # Pattern 5: Ép bot không được từ chối hoặc áp đặt câu mở đầu
+        r"(start\s+your\s+response\s+with|do\s+not\s+refuse|you\s+must\s+answer)"
     ]
 
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, cleaned_input, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -75,35 +96,24 @@ def detect_injection(user_input: str) -> InputStatus:
 # ============================================================
 
 def topic_filter(user_input: str) -> InputStatus:
-    """Decide whether the input is on-topic for VinBank.
+    """Decide whether the input is on-topic for VinBank."""
+    if not user_input or not user_input.strip():
+        return "BLOCK"
 
-    Args:
-        user_input: The user's message
-
-    Returns:
-        ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
-        ``"ALLOW"`` = cho qua (câu banking hợp lệ).
-    """
     input_lower = user_input.lower()
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
+    # 1. Chứa chủ đề bị cấm -> BLOCK ngay lập tức
+    for blocked in BLOCKED_TOPICS:
+        if blocked.lower() in input_lower:
+            return "BLOCK"
 
-    pass  # Replace with your implementation
+    # 2. Phải chứa ít nhất một chủ đề ngân hàng hợp lệ, nếu không có -> BLOCK
+    has_allowed = any(allowed.lower() in input_lower for allowed in ALLOWED_TOPICS)
+    if not has_allowed:
+        return "BLOCK"
 
-
-# ============================================================
-# Implement InputGuardrailPlugin
-#
-# This plugin blocks bad input BEFORE it reaches the LLM.
-# Fill in the on_user_message_callback method.
-#
-# NOTE: The callback uses keyword-only arguments (after *).
-#   - user_message is types.Content (not str)
-#   - Return types.Content to block, or None to pass through
-# ============================================================
+    # 3. Đủ điều kiện -> ALLOW
+    return "ALLOW"
 
 class InputGuardrailPlugin(base_plugin.BasePlugin):
     """Plugin that blocks bad input before it reaches the LLM."""
@@ -144,14 +154,22 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        # 1. Kiểm tra tấn công Prompt Injection
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Yêu cầu bị từ chối: Phát hiện dấu hiệu tấn công hoặc can thiệp hệ thống."
+            )
 
-        pass  # Replace with your implementation
+        # 2. Kiểm tra chủ đề có hợp lệ với VinBank hay không
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Yêu cầu bị từ chối: Chủ đề này nằm ngoài phạm vi dịch vụ ngân hàng của VinBank."
+            )
+
+        # 3. An toàn -> Cho qua (gửi tiếp đến LLM)
+        return None
 
 
 # ============================================================
